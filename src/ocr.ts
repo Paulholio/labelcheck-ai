@@ -11,6 +11,10 @@ export interface OcrResult {
   timedOut: boolean;
 }
 
+function assetUrl(path: string): string {
+  return new URL(`${import.meta.env.BASE_URL}${path}`, window.location.origin).toString();
+}
+
 export async function extractTextFromImage(
   file: File,
   onProgress: (progress: OcrProgress) => void,
@@ -28,9 +32,9 @@ export async function extractTextFromImage(
   try {
     const result = await Promise.race([
       recognize(file, "eng", {
-        workerPath: "/ocr/worker.min.js",
-        corePath: "/ocr/core",
-        langPath: "/ocr/lang",
+        workerPath: assetUrl("ocr/worker.min.js"),
+        corePath: assetUrl("ocr/core"),
+        langPath: assetUrl("ocr/lang"),
         gzip: false,
         logger(message) {
           if (typeof message.progress === "number") {

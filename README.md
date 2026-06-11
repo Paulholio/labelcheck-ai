@@ -33,6 +33,11 @@ Render static site:
 - Build command: `npm install && npm run build`
 - Publish directory: `dist`
 
+GitHub Pages project site at `https://paulholio.github.io/labelcheck-ai/`:
+
+- Push this repo to `Paulholio/labelcheck-ai`.
+- The included `.github/workflows/pages.yml` workflow builds with `VITE_BASE_PATH=/labelcheck-ai/` and deploys `dist/`.
+
 ## What it does
 
 - Verifies brand name, class/type, alcohol content, net contents, name/address, country of origin when imported, and the government health warning.
