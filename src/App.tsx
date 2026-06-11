@@ -14,12 +14,14 @@ import {
   XCircle
 } from "lucide-react";
 import { ChangeEvent, useMemo, useRef, useState } from "react";
+import { looksLikeManifest, ManifestLabel, parseManifest } from "./manifest";
 import { extractTextFromImage, isImageFile, isTextLikeFile, OcrProgress } from "./ocr";
 import { samples } from "./samples";
 import {
   ApplicationData,
   CheckResult,
   CheckStatus,
+  createIntakeReviewReport,
   Decision,
   emptyApplication,
   GOVERNMENT_WARNING,
@@ -34,6 +36,7 @@ interface QueueItem {
   name: string;
   text: string;
   report: VerificationReport;
+  application?: ApplicationData;
   ocrTimedOut?: boolean;
 }
 
@@ -60,6 +63,7 @@ function App() {
   const [application, setApplication] = useState<ApplicationData>(emptyApplication);
   const [labelText, setLabelText] = useState(samples[0].text);
   const [sourceName, setSourceName] = useState("Sample label");
+  const [singleIntakeIssue, setSingleIntakeIssue] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>(() =>
     samples.map((sample) => ({
       id: sample.id,
@@ -74,8 +78,11 @@ function App() {
   const batchInputRef = useRef<HTMLInputElement | null>(null);
 
   const report = useMemo(
-    () => verifyLabel(application, labelText, sourceName),
-    [application, labelText, sourceName]
+    () =>
+      singleIntakeIssue
+        ? createIntakeReviewReport(sourceName, singleIntakeIssue, labelText)
+        : verifyLabel(application, labelText, sourceName),
+    [application, labelText, singleIntakeIssue, sourceName]
   );
 
   const reportCounts = useMemo(
@@ -112,6 +119,7 @@ function App() {
     setApplication(sample.application);
     setLabelText(sample.text);
     setSourceName(sample.name);
+    setSingleIntakeIssue(null);
   }
 
   async function handleSingleFile(event: ChangeEvent<HTMLInputElement>) {
@@ -128,14 +136,31 @@ function App() {
     try {
       if (isImageFile(file)) {
         const result = await extractTextFromImage(file, setOcrProgress);
-        setLabelText(
-          result.timedOut
-            ? `OCR timed out after ${result.durationMs} ms. Agent review required.`
-            : result.text
-        );
+        if (result.timedOut) {
+          setLabelText("");
+          setSingleIntakeIssue(
+            `OCR timed out after ${result.durationMs} ms. Keep this item in manual review or paste corrected label text.`
+          );
+        } else {
+          setLabelText(result.text);
+          setSingleIntakeIssue(null);
+        }
       } else if (isTextLikeFile(file)) {
         setLabelText(await file.text());
+        setSingleIntakeIssue(null);
+      } else {
+        setLabelText("");
+        setSingleIntakeIssue(
+          `Unsupported file type "${file.type || "unknown"}". Upload an image, text file, CSV, or JSON manifest.`
+        );
       }
+    } catch (error) {
+      setLabelText("");
+      setSingleIntakeIssue(
+        error instanceof Error
+          ? `Could not read this file: ${error.message}`
+          : "Could not read this file."
+      );
     } finally {
       setIsReading(false);
       setOcrProgress(null);
@@ -147,34 +172,94 @@ function App() {
     if (files.length === 0) return;
     setIsReading(true);
     setOcrProgress(null);
-    const nextItems: QueueItem[] = [];
+    try {
+      const groupedItems = await mapWithConcurrency(files, 3, readBatchFile);
+      setQueue((current) => [...groupedItems.flat(), ...current]);
+    } finally {
+      setIsReading(false);
+      setOcrProgress(null);
+      event.target.value = "";
+    }
+  }
 
-    for (const file of files) {
-      let text = "";
-      let ocrTimedOut = false;
+  async function readBatchFile(file: File): Promise<QueueItem[]> {
+    try {
       if (isImageFile(file)) {
         const result = await extractTextFromImage(file, setOcrProgress);
-        text = result.text || `OCR timed out after ${result.durationMs} ms.`;
-        ocrTimedOut = result.timedOut;
-      } else if (isTextLikeFile(file)) {
-        text = await file.text();
-      } else {
-        text = `Unsupported file type: ${file.type || "unknown"}`;
+        if (result.timedOut) {
+          return [
+            intakeQueueItem(
+              file.name,
+              `OCR timed out after ${result.durationMs} ms. Agent should manually review or paste corrected label text.`,
+              "",
+              true
+            )
+          ];
+        }
+        return [verifiedQueueItem(file.name, result.text, application)];
       }
 
-      nextItems.push({
-        id: crypto.randomUUID(),
-        name: file.name,
-        text,
-        ocrTimedOut,
-        report: verifyLabel(application, text, file.name)
-      });
-    }
+      if (isTextLikeFile(file)) {
+        const text = await file.text();
+        if (looksLikeManifest(file.name, text)) {
+          return parseManifest(text, file.name, application).map(manifestQueueItem);
+        }
+        return [verifiedQueueItem(file.name, text, application)];
+      }
 
-    setQueue((current) => [...nextItems, ...current]);
-    setIsReading(false);
-    setOcrProgress(null);
-    event.target.value = "";
+      return [
+        intakeQueueItem(
+          file.name,
+          `Unsupported file type "${file.type || "unknown"}". Upload an image, text file, CSV, or JSON manifest.`
+        )
+      ];
+    } catch (error) {
+      return [
+        intakeQueueItem(
+          file.name,
+          error instanceof Error ? `Could not process file: ${error.message}` : "Could not process file."
+        )
+      ];
+    }
+  }
+
+  function manifestQueueItem(item: ManifestLabel): QueueItem {
+    if (!item.labelText.trim()) {
+      return intakeQueueItem(
+        item.sourceName,
+        "Manifest row is missing labelText/text content, so this item needs manual review."
+      );
+    }
+    return verifiedQueueItem(item.sourceName, item.labelText, item.application);
+  }
+
+  function verifiedQueueItem(
+    name: string,
+    text: string,
+    itemApplication: ApplicationData
+  ): QueueItem {
+    return {
+      id: crypto.randomUUID(),
+      name,
+      text,
+      application: itemApplication,
+      report: verifyLabel(itemApplication, text, name)
+    };
+  }
+
+  function intakeQueueItem(
+    name: string,
+    detail: string,
+    text = "",
+    ocrTimedOut = false
+  ): QueueItem {
+    return {
+      id: crypto.randomUUID(),
+      name,
+      text,
+      ocrTimedOut,
+      report: createIntakeReviewReport(name, detail, text)
+    };
   }
 
   function addCurrentToBatch() {
@@ -183,6 +268,7 @@ function App() {
         id: crypto.randomUUID(),
         name: sourceName,
         text: labelText,
+        application,
         report
       },
       ...current
@@ -406,7 +492,10 @@ function App() {
               <textarea
                 aria-label="Extracted or pasted label text"
                 value={labelText}
-                onChange={(event) => setLabelText(event.target.value)}
+                onChange={(event) => {
+                  setLabelText(event.target.value);
+                  setSingleIntakeIssue(null);
+                }}
                 spellCheck={false}
               />
 
@@ -625,6 +714,28 @@ function Metric({
       <strong>{value}</strong>
     </div>
   );
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function runNext() {
+    const index = nextIndex;
+    nextIndex += 1;
+    if (index >= items.length) return;
+    results[index] = await worker(items[index]);
+    await runNext();
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => runNext())
+  );
+  return results;
 }
 
 export default App;

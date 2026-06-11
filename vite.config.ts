@@ -5,7 +5,7 @@ export default defineConfig({
   base: process.env.VITE_BASE_PATH ?? "/",
   plugins: [react()],
   build: {
-    sourcemap: true
+    sourcemap: process.env.VITE_SOURCEMAP === "true"
   },
   test: {
     environment: "node"

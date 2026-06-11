@@ -5,15 +5,15 @@ AI-assisted prototype for alcohol label verification. It compares a COLA-style a
 ## Run locally
 
 ```bash
-npm install
+nvm use
+npm ci
 npm run dev
 ```
 
 Open the local URL printed by Vite. For production build checks:
 
 ```bash
-npm test
-npm run build
+npm run check
 ```
 
 ## Deploy
@@ -43,9 +43,35 @@ GitHub Pages project site at `https://paulholio.github.io/labelcheck-ai/`:
 - Verifies brand name, class/type, alcohol content, net contents, name/address, country of origin when imported, and the government health warning.
 - Handles common human-review nuance with normalization and fuzzy matching, so case and punctuation differences such as `STONE'S THROW` vs. `Stone's Throw` are not treated as hard failures.
 - Converts proof to ABV for alcohol matching, for example `90 Proof` equals `45% ABV`.
-- Supports a single-review workflow plus a batch queue for many label files.
-- Runs OCR in the browser with Tesseract.js, local OCR assets under `public/ocr/`, uncompressed English trained data, and a 5-second timeout. If OCR is too slow, the item is marked for manual review rather than blocking the workflow.
+- Supports a single-review workflow plus a batch queue for label files and CSV/JSON manifests with one application record per label.
+- Parses mL, L, and fluid-ounce net contents.
+- Runs OCR in the browser with Tesseract.js, local OCR assets under `public/ocr/`, uncompressed English trained data, and a 5-second timeout. If OCR is too slow or a file cannot be read, the item is marked for manual review rather than returned for correction.
 - Stores no label data on a server. All processing in this prototype happens in the browser.
+
+## Batch manifests
+
+Batch CSV/JSON files can include application data and label text in the same row. Supported column/key names include:
+
+- `sourceName`
+- `brandName`
+- `classType`
+- `alcoholContent`
+- `netContents`
+- `nameAndAddress`
+- `countryOfOrigin`
+- `imported`
+- `beverageType` (`distilled_spirits`, `wine`, `malt_beverage`, or `beer`)
+- `labelText`
+
+Example CSV:
+
+```csv
+sourceName,brandName,classType,alcoholContent,netContents,nameAndAddress,beverageType,labelText
+label-1,HARBOR LIGHT,Lager,5% ABV,12 fl oz,"Brewed by Harbor Light Brewing, Portland, ME",beer,"HARBOR LIGHT
+Lager
+5% ABV
+12 FL OZ"
+```
 
 ## Approach
 
@@ -53,6 +79,7 @@ The prototype deliberately avoids cloud AI APIs because the stakeholder notes ca
 
 - `src/ocr.ts` extracts text from image uploads using browser OCR loaded from same-origin files in `public/ocr/`.
 - `src/verification.ts` contains the testable rule engine.
+- `src/manifest.ts` parses CSV/JSON batch manifests.
 - `src/App.tsx` provides the agent-facing single and batch review workflows.
 
 The UI is intentionally direct: application values on the left, label text and results on the right, large status badges, no hidden navigation, and sample cases for quick testing.
@@ -74,6 +101,7 @@ Sources:
 
 - This is a standalone proof of concept, not a COLA integration.
 - Plain OCR text cannot reliably prove bold styling, type size, contrast, or same-field-of-vision layout. The app marks those visual checks for manual review when the uploaded text lacks explicit markup.
-- The rule engine focuses on the common distilled spirits example in the prompt while keeping beverage type as an application field for future rule branching.
+- Beverage-specific rules are represented in a prototype rule profile for distilled spirits, wine, and malt beverages. A production implementation should expand this with the full TTB beverage-specific rule set.
 - OCR quality depends on image clarity. Poor lighting, glare, extreme skew, or decorative fonts may still require an agent to request a better image.
-- Batch files use the currently entered application data for comparison. A production batch workflow would import one application record per label from COLA or a structured manifest.
+- Image-only batch files use the currently entered application data for comparison unless a CSV/JSON manifest supplies per-label application data.
+- First OCR use may need to download the same-origin worker/WASM/language assets from `public/ocr/`; the app keeps failures in manual review so agents can paste corrected text.

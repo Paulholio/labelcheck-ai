@@ -32,8 +32,36 @@ export interface VerificationReport {
   labelText: string;
 }
 
+interface BeverageRuleProfile {
+  classTypeLabel: string;
+  alcoholLabel: string;
+  netContentsLabel: string;
+  proofEquivalentAllowed: boolean;
+}
+
 export const GOVERNMENT_WARNING =
   "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.";
+
+const BEVERAGE_RULES: Record<BeverageType, BeverageRuleProfile> = {
+  distilled_spirits: {
+    classTypeLabel: "Class/type",
+    alcoholLabel: "Alcohol content",
+    netContentsLabel: "Net contents",
+    proofEquivalentAllowed: true
+  },
+  wine: {
+    classTypeLabel: "Class/type or wine designation",
+    alcoholLabel: "Alcohol content",
+    netContentsLabel: "Net contents",
+    proofEquivalentAllowed: false
+  },
+  malt_beverage: {
+    classTypeLabel: "Class/type or malt beverage designation",
+    alcoholLabel: "Alcohol content",
+    netContentsLabel: "Net contents",
+    proofEquivalentAllowed: false
+  }
+};
 
 const COMMON_WORDS = new Set([
   "the",
@@ -72,18 +100,13 @@ export function verifyLabel(
 ): VerificationReport {
   const started = performance.now();
   const text = labelText.trim();
+  const rules = BEVERAGE_RULES[application.beverageType];
   const checks: CheckResult[] = [
     matchTextField("brand", "Brand name", application.brandName, text),
-    matchTextField("class-type", "Class/type", application.classType, text),
-    checkAlcoholContent(application.alcoholContent, text),
-    checkNetContents(application.netContents, text),
-    matchTextField(
-      "name-address",
-      "Name and address",
-      application.nameAndAddress,
-      text,
-      true
-    )
+    matchTextField("class-type", rules.classTypeLabel, application.classType, text),
+    checkAlcoholContent(application.alcoholContent, text, rules),
+    checkNetContents(application.netContents, text, rules),
+    checkNameAndAddress(application.nameAndAddress, text)
   ];
 
   if (application.imported) {
@@ -128,6 +151,31 @@ export function verifyLabel(
   };
 }
 
+export function createIntakeReviewReport(
+  sourceName: string,
+  detail: string,
+  labelText = ""
+): VerificationReport {
+  return {
+    id: crypto.randomUUID(),
+    sourceName,
+    decision: "needs_review",
+    score: 50,
+    durationMs: 0,
+    labelText,
+    checks: [
+      {
+        id: "intake",
+        label: "File intake",
+        status: "review",
+        expected: "Readable label text",
+        found: sourceName,
+        detail
+      }
+    ]
+  };
+}
+
 export function normalize(value: string): string {
   return value
     .toLowerCase()
@@ -147,20 +195,10 @@ function matchTextField(
   id: string,
   label: string,
   expected: string,
-  rawText: string,
-  optional = false
+  rawText: string
 ): CheckResult {
   if (!expected.trim()) {
-    return {
-      id,
-      label,
-      status: optional ? "pass" : "review",
-      expected: "Application value required",
-      found: optional ? "Not provided; skipped" : "Missing from application",
-      detail: optional
-        ? "No application value was supplied for this optional prototype check."
-        : "The application field is blank, so the label cannot be verified."
-    };
+    return blankRequired(id, label);
   }
 
   const expectedNormalized = normalize(expected);
@@ -217,20 +255,43 @@ function matchTextField(
   };
 }
 
-function checkAlcoholContent(expected: string, rawText: string): CheckResult {
+function checkNameAndAddress(expected: string, rawText: string): CheckResult {
+  const base = matchTextField("name-address", "Name and address", expected, rawText);
+  if (base.status !== "pass") return base;
+
+  const rolePhrase =
+    /\b(bottled|produced|imported|distilled|brewed|vinted|packed)\s+by\b/iu.test(rawText);
+  if (!rolePhrase) {
+    return {
+      ...base,
+      status: "review",
+      found: base.found,
+      detail:
+        "Responsible party text matches, but the role phrase such as 'Bottled by' or 'Produced by' was not detected."
+    };
+  }
+
+  return base;
+}
+
+function checkAlcoholContent(
+  expected: string,
+  rawText: string,
+  rules: BeverageRuleProfile
+): CheckResult {
   if (!expected.trim()) {
-    return blankRequired("alcohol", "Alcohol content");
+    return blankRequired("alcohol", rules.alcoholLabel);
   }
 
   const expectedAbv = firstAbvValue(expected);
-  const labelValues = allAbvValues(rawText);
+  const labelValues = allAbvValues(rawText, rules.proofEquivalentAllowed);
   const expectedNormalized = normalize(expected);
   const textNormalized = normalize(rawText);
 
   if (expectedAbv == null && textNormalized.includes(expectedNormalized)) {
     return {
       id: "alcohol",
-      label: "Alcohol content",
+      label: rules.alcoholLabel,
       status: "pass",
       expected,
       found: expected,
@@ -241,7 +302,7 @@ function checkAlcoholContent(expected: string, rawText: string): CheckResult {
   if (expectedAbv == null) {
     return {
       id: "alcohol",
-      label: "Alcohol content",
+      label: rules.alcoholLabel,
       status: "review",
       expected,
       found: "Could not parse expected ABV",
@@ -253,7 +314,7 @@ function checkAlcoholContent(expected: string, rawText: string): CheckResult {
   if (matching != null) {
     return {
       id: "alcohol",
-      label: "Alcohol content",
+      label: rules.alcoholLabel,
       status: "pass",
       expected,
       found: `${trimNumber(matching)}% ABV`,
@@ -264,7 +325,7 @@ function checkAlcoholContent(expected: string, rawText: string): CheckResult {
   if (labelValues.length > 0) {
     return {
       id: "alcohol",
-      label: "Alcohol content",
+      label: rules.alcoholLabel,
       status: "fail",
       expected: `${trimNumber(expectedAbv)}% ABV`,
       found: labelValues.map((value) => `${trimNumber(value)}% ABV`).join(", "),
@@ -274,7 +335,7 @@ function checkAlcoholContent(expected: string, rawText: string): CheckResult {
 
   return {
     id: "alcohol",
-    label: "Alcohol content",
+    label: rules.alcoholLabel,
     status: "fail",
     expected: `${trimNumber(expectedAbv)}% ABV`,
     found: "No ABV or proof statement found",
@@ -282,9 +343,13 @@ function checkAlcoholContent(expected: string, rawText: string): CheckResult {
   };
 }
 
-function checkNetContents(expected: string, rawText: string): CheckResult {
+function checkNetContents(
+  expected: string,
+  rawText: string,
+  rules: BeverageRuleProfile
+): CheckResult {
   if (!expected.trim()) {
-    return blankRequired("net-contents", "Net contents");
+    return blankRequired("net-contents", rules.netContentsLabel);
   }
 
   const expectedMl = firstVolumeMl(expected);
@@ -293,7 +358,7 @@ function checkNetContents(expected: string, rawText: string): CheckResult {
   if (expectedMl == null && normalize(rawText).includes(normalize(expected))) {
     return {
       id: "net-contents",
-      label: "Net contents",
+      label: rules.netContentsLabel,
       status: "pass",
       expected,
       found: expected,
@@ -304,7 +369,7 @@ function checkNetContents(expected: string, rawText: string): CheckResult {
   if (expectedMl == null) {
     return {
       id: "net-contents",
-      label: "Net contents",
+      label: rules.netContentsLabel,
       status: "review",
       expected,
       found: "Could not parse expected volume",
@@ -316,7 +381,7 @@ function checkNetContents(expected: string, rawText: string): CheckResult {
   if (matching != null) {
     return {
       id: "net-contents",
-      label: "Net contents",
+      label: rules.netContentsLabel,
       status: "pass",
       expected,
       found: formatMl(matching),
@@ -327,7 +392,7 @@ function checkNetContents(expected: string, rawText: string): CheckResult {
   if (labelVolumes.length > 0) {
     return {
       id: "net-contents",
-      label: "Net contents",
+      label: rules.netContentsLabel,
       status: "fail",
       expected: formatMl(expectedMl),
       found: labelVolumes.map(formatMl).join(", "),
@@ -337,7 +402,7 @@ function checkNetContents(expected: string, rawText: string): CheckResult {
 
   return {
     id: "net-contents",
-    label: "Net contents",
+    label: rules.netContentsLabel,
     status: "fail",
     expected: formatMl(expectedMl),
     found: "No volume statement found",
@@ -346,10 +411,9 @@ function checkNetContents(expected: string, rawText: string): CheckResult {
 }
 
 function checkGovernmentWarningText(rawText: string): CheckResult {
-  const required = normalize(GOVERNMENT_WARNING);
-  const label = normalize(rawText);
+  const exactLabel = warningSurface(rawText);
 
-  if (label.includes(required)) {
+  if (exactLabel.includes(GOVERNMENT_WARNING)) {
     return {
       id: "warning-text",
       label: "Government warning wording",
@@ -360,6 +424,8 @@ function checkGovernmentWarningText(rawText: string): CheckResult {
     };
   }
 
+  const required = normalize(GOVERNMENT_WARNING);
+  const label = normalize(rawText);
   const warningStart = label.indexOf("government warning");
   if (warningStart >= 0) {
     const candidate = label.slice(warningStart, warningStart + required.length + 80);
@@ -432,18 +498,26 @@ function blankRequired(id: string, label: string): CheckResult {
   return {
     id,
     label,
-    status: "review",
+    status: "fail",
     expected: "Application value required",
     found: "Missing from application",
     detail: "The application field is blank, so the label cannot be verified."
   };
 }
 
-function firstAbvValue(value: string): number | null {
-  return allAbvValues(value)[0] ?? null;
+function warningSurface(value: string): string {
+  return value
+    .replace(/<\/?(strong|b)>/giu, "")
+    .replace(/\*\*/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
-function allAbvValues(value: string): number[] {
+function firstAbvValue(value: string): number | null {
+  return allAbvValues(value, true)[0] ?? null;
+}
+
+function allAbvValues(value: string, includeProof: boolean): number[] {
   const values: number[] = [];
   const abvPatterns = [
     /(\d{1,3}(?:\.\d+)?)\s*%\s*(?:alc(?:ohol)?\.?\s*\/?\s*vol\.?|abv|alcohol\s+by\s+volume)?/giu,
@@ -459,10 +533,12 @@ function allAbvValues(value: string): number[] {
     }
   }
 
-  for (const match of value.matchAll(/(\d{1,3}(?:\.\d+)?)\s*proof/giu)) {
-    const parsed = Number(match[1]);
-    if (Number.isFinite(parsed) && parsed > 0 && parsed <= 200) {
-      values.push(parsed / 2);
+  if (includeProof) {
+    for (const match of value.matchAll(/(\d{1,3}(?:\.\d+)?)\s*proof/giu)) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > 0 && parsed <= 200) {
+        values.push(parsed / 2);
+      }
     }
   }
 
@@ -476,8 +552,9 @@ function firstVolumeMl(value: string): number | null {
 function allVolumeMl(value: string): number[] {
   const values: number[] = [];
   const patterns = [
-    /(\d{1,5}(?:\.\d+)?)\s*(?:ml|mL|milliliters?|millilitres?)\b/gu,
-    /(\d{1,3}(?:\.\d+)?)\s*(?:l|L|liters?|litres?)\b/gu
+    /(\d{1,5}(?:\.\d+)?)\s*(?:ml|milliliters?|millilitres?)\b/giu,
+    /(\d{1,3}(?:\.\d+)?)\s*(?:l|liters?|litres?)\b/giu,
+    /(\d{1,4}(?:\.\d+)?)\s*(?:fl\.?\s*oz\.?|fluid\s+ounces?)\b/giu
   ];
 
   for (const match of value.matchAll(patterns[0])) {
@@ -488,6 +565,11 @@ function allVolumeMl(value: string): number[] {
   for (const match of value.matchAll(patterns[1])) {
     const parsed = Number(match[1]);
     if (Number.isFinite(parsed)) values.push(parsed * 1000);
+  }
+
+  for (const match of value.matchAll(patterns[2])) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed)) values.push(parsed * 29.5735);
   }
 
   return uniqueNumbers(values);
