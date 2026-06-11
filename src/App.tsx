@@ -78,6 +78,15 @@ function App() {
     [application, labelText, sourceName]
   );
 
+  const reportCounts = useMemo(
+    () => ({
+      pass: report.checks.filter((check) => check.status === "pass").length,
+      review: report.checks.filter((check) => check.status === "review").length,
+      fail: report.checks.filter((check) => check.status === "fail").length
+    }),
+    [report.checks]
+  );
+
   const summary = useMemo(() => {
     const total = queue.length || 1;
     return {
@@ -217,33 +226,42 @@ function App() {
             <h1>LabelCheck AI</h1>
           </div>
         </div>
-        <div className="topbar-actions" role="tablist" aria-label="Workspace">
-          <button
-            className={mode === "single" ? "tab active" : "tab"}
-            type="button"
-            role="tab"
-            aria-selected={mode === "single"}
-            onClick={() => setMode("single")}
-          >
-            <ClipboardCheck aria-hidden="true" size={18} />
-            Single review
-          </button>
-          <button
-            className={mode === "batch" ? "tab active" : "tab"}
-            type="button"
-            role="tab"
-            aria-selected={mode === "batch"}
-            onClick={() => setMode("batch")}
-          >
-            <Files aria-hidden="true" size={18} />
-            Batch queue
-          </button>
+        <div className="topbar-right">
+          <div className={`live-status ${report.decision}`} aria-label="Current result">
+            <span className="status-dot" />
+            <div>
+              <span>Current result</span>
+              <strong>{decisionCopy[report.decision]}</strong>
+            </div>
+          </div>
+          <div className="topbar-actions" role="tablist" aria-label="Workspace">
+            <button
+              className={mode === "single" ? "tab active" : "tab"}
+              type="button"
+              role="tab"
+              aria-selected={mode === "single"}
+              onClick={() => setMode("single")}
+            >
+              <ClipboardCheck aria-hidden="true" size={18} />
+              Single review
+            </button>
+            <button
+              className={mode === "batch" ? "tab active" : "tab"}
+              type="button"
+              role="tab"
+              aria-selected={mode === "batch"}
+              onClick={() => setMode("batch")}
+            >
+              <Files aria-hidden="true" size={18} />
+              Batch queue
+            </button>
+          </div>
         </div>
       </header>
 
       {mode === "single" ? (
         <section className="workspace" aria-label="Single label review">
-          <aside className="panel app-panel">
+          <aside className="panel app-panel form-panel">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">COLA application</p>
@@ -263,6 +281,12 @@ function App() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="case-strip" aria-label="Application profile">
+              <span>{application.beverageType.replace("_", " ")}</span>
+              <span>{application.imported ? "Imported" : "Domestic"}</span>
+              <span>{application.netContents || "Net contents missing"}</span>
             </div>
 
             <div className="form-grid">
@@ -344,7 +368,7 @@ function App() {
           </aside>
 
           <section className="review-column">
-            <div className="panel">
+            <div className="panel input-panel">
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">Label artwork text</p>
@@ -359,20 +383,22 @@ function App() {
                     onChange={handleSingleFile}
                   />
                   <button
-                    className="icon-button"
+                    className="secondary-button compact"
                     type="button"
                     title="Upload label file"
                     onClick={() => fileInputRef.current?.click()}
                   >
                     <Upload aria-hidden="true" size={18} />
+                    Upload
                   </button>
                   <button
-                    className="icon-button"
+                    className="secondary-button compact"
                     type="button"
                     title="Add current review to batch"
                     onClick={addCurrentToBatch}
                   >
                     <Files aria-hidden="true" size={18} />
+                    Add to batch
                   </button>
                 </div>
               </div>
@@ -400,7 +426,7 @@ function App() {
               </div>
             </div>
 
-            <ReportPanel report={report} />
+            <ReportPanel report={report} counts={reportCounts} />
           </section>
         </section>
       ) : (
@@ -464,7 +490,7 @@ function App() {
 
           <div className="queue">
             {queue.map((item) => (
-              <article className="queue-card" key={item.id}>
+              <article className={`queue-card ${item.report.decision}`} key={item.id}>
                 <div className="queue-card-main">
                   <div className={`decision-badge ${item.report.decision}`}>
                     {decisionCopy[item.report.decision]}
@@ -477,6 +503,9 @@ function App() {
                 <div className="queue-score">
                   <Gauge aria-hidden="true" size={18} />
                   {item.report.score}%
+                </div>
+                <div className="queue-meter" aria-hidden="true">
+                  <span style={{ width: `${item.report.score}%` }} />
                 </div>
                 <div className="mini-checks">
                   {item.report.checks.slice(0, 5).map((check) => (
@@ -500,18 +529,40 @@ function App() {
   );
 }
 
-function ReportPanel({ report }: { report: VerificationReport }) {
+function ReportPanel({
+  report,
+  counts
+}: {
+  report: VerificationReport;
+  counts: Record<CheckStatus, number>;
+}) {
   return (
     <section className="panel report-panel" aria-label="Verification result">
       <div className="result-header">
-        <div>
+        <div className="result-copy">
           <p className="eyebrow">Review result</p>
           <h2>{decisionCopy[report.decision]}</h2>
           <p>{decisionDetail[report.decision]}</p>
+          <div className="review-pulse" aria-label="Check status summary">
+            <span className="pass">
+              <strong>{counts.pass}</strong> pass
+            </span>
+            <span className="review">
+              <strong>{counts.review}</strong> review
+            </span>
+            <span className="fail">
+              <strong>{counts.fail}</strong> fail
+            </span>
+          </div>
         </div>
-        <div className={`score-ring ${report.decision}`}>
-          <strong>{report.score}%</strong>
-          <span>{report.durationMs} ms</span>
+        <div className="score-card">
+          <div className={`score-ring ${report.decision}`}>
+            <strong>{report.score}%</strong>
+            <span>{report.durationMs} ms</span>
+          </div>
+          <div className="score-meter" aria-hidden="true">
+            <span style={{ width: `${report.score}%` }} />
+          </div>
         </div>
       </div>
 
